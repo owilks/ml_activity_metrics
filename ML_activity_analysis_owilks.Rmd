@@ -1,0 +1,118 @@
+---
+title: "Activity sensor analysis"
+author: "owilks"
+date: "July 20, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(caret)
+library(gbm)
+library(ggplot2)
+test <-read.csv("pml-testing.csv")
+train <-read.csv("pml-training.csv",na.strings=c("","NA"))
+```
+
+## R Markdown
+
+This analysis uses the position of several weightlifter bodily sensors on to predict the specific type of exercise performed.
+While they were all doing the "same exercise", participants were instructed to create specific mistakes as they redid the activity.
+Those mistakes were categorized, and each constitute a separate "classe", relative to the golden standard for the exercise, categorized as classe 'A'.
+We tested and tweaked several machine learning algorithms to get to one that could better assess.
+
+
+## Methods
+
+Exploratory analysis showed approximately 6-7 variables allocated to timeslots, the performer, and identifying the stage of the activity leading the dataset.
+
+This would be excluded from the final analysis given the nature of the question, predicting the "classe" for specific rows (rather than in any other aggregate: by weightlifter, by time series).
+
+```{r summary}
+summary(train[,0:7])
+```
+
+Afterwards were myriad metrics regarding various sensors, and sub-calculations and min/max characteristics of readings and sub-calculations for those sensors.
+
+A large number of these were over 90% NA/blanks (processing the data we read in blanks as NA), and given the nature of the question were subsetted out.
+
+Code for this analysis was sampled from [this stackoverflow solution](#https://stackoverflow.com/questions/24027605/determine-the-number-of-na-values-in-a-column)
+
+```{r preprocess}
+na_count <-sapply(train, function(y) sum(length(which(is.na(y)))))
+hist(na_count,labels=TRUE,main="Count of NAs")
+```
+
+Removing the variables with high amounts of NAs and the initial categorical or time-specific variables left us with 53 potential predictors.
+
+```{r preprocess2}
+trim<-na_count > 1
+train2 <- train[!trim]
+col<- names(train2)
+train3 <- train2[,-c(1:7)]
+```
+
+After the trimming was complete we created a subset within the training data to allow for testing of the model. The structure of the test data does not have the "classe" variable, so this allowed us to test the out-of-sample accuracy of any models holistically.
+
+```{r init}
+set.seed(11232)
+inTrain <- createDataPartition(y=train3$classe, p=0.70, list=FALSE)
+mltrain <- train3[inTrain,]
+mltest <- train3[-inTrain,]
+```
+
+Afterwards we created two models for comparison. A Gradient Boost Multinomial model that was continuously retuned to attempt to increase accuracy, and a Random Forest model.
+
+Both of which used 10 cross-validation samples from the new training data subset.
+
+```{r modelbuild, eval=FALSE, include=TRUE}
+model<-gbm(classe~.,data=mltrain,interaction.depth=10,bag.fraction=.5,shrinkage=.001,n.trees=2000,cv.folds=10,n.minobsinnode=1,keep.data=FALSE)
+
+model2<-train(classe~.,data=mltrain,method="rf",trControl=trainControl(method="cv",number=10))
+```
+
+These models were then used to predict the results for the "mltest" test dataset subsetted from the original training data.
+
+```{r resultprep}
+
+pred <-predict.gbm(model,newdata=mltest,n.trees=400,type="response")
+
+predfix <- apply(pred, 1, which.max)
+predfix[predfix==1]<-"A"
+predfix[predfix==2]<-"B"
+predfix[predfix==3]<-"C"
+predfix[predfix==4]<-"D"
+predfix[predfix==5]<-"E"
+
+pred<-as.data.frame(pred)
+
+pred2 <-predict(model2,mltest,type="prob")
+pred2fix <-predict(model2,mltest)
+```
+
+Initially an attempt was going to be made to combine both models to potentially achieve greater out-of-sample results on the test data, but the outperformance of the random forest model ultimately resulted in it's discretionary selection.
+
+##Results
+
+The results for the different models show a clear improvement with the random forest model over a tweaked and iterative gbm model.
+```{r tables}
+#GBM model
+table(predfix,mltest$classe)
+#RF model
+table(pred2fix,mltest$classe)
+```
+
+Proceeding with the RF model, or "model2", the next step was estimating our out of sample error rate, which, taking a look at the training-test data set of length `r length(mltest$classe)` and accurate predictions of `r sum(pred2fix==mltest$classe) `
+
+Our out of sample rate is `r 1-sum(pred2fix==mltest$classe)/length(mltest$classe) `
+or `r (1-sum(pred2fix==mltest$classe)/length(mltest$classe))*100 `%
+
+Finally for review here is a quick summary of the final model:
+
+```{r final}
+print(model2)
+```
+
+For further analysis the delta of each step should be analyzed for each of the respective "performances" of an activity to see if there's meaningful data that can be extracted from the respective derivative of our dataset.
